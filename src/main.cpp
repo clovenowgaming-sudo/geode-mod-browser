@@ -5,6 +5,7 @@
 #include <Geode/utils/file.hpp>
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 
 using namespace geode::prelude;
 
@@ -13,6 +14,7 @@ class ModBrowserPopup : public Popup {
     CCLabelBMFont* m_status = nullptr;
     CCNode* m_list = nullptr;
     async::TaskHolder<web::WebResponse> m_request;
+    std::unordered_map<CCObject*, std::pair<std::string, std::string>> m_downloads;
 
     std::string serverURL() const {
         if (m_serverInput) {
@@ -85,13 +87,9 @@ class ModBrowserPopup : public Popup {
             if (!download.empty()) {
                 auto buttonLabel = CCLabelBMFont::create("Download", "goldFont.fnt");
                 buttonLabel->setScale(.42f);
-                auto button = CCMenuItemLabel::create(buttonLabel, [this, download, gd, geode](CCObject*) {
-                    if (gd != "2.2081" || geode != "5.11.2") {
-                        FLAlertLayer::create("ModBrowser", "This mod does not target GD 2.2081 / Geode 5.11.2.", "OK")->show();
-                        return;
-                    }
-                    downloadMod(download);
-                });
+                auto button = CCMenuItemLabel::create(buttonLabel);
+                button->setTarget(this, menu_selector(ModBrowserPopup::onDownloadClick));
+                m_downloads[button] = {download, gd + "|" + geode};
                 auto menu = CCMenu::create();
                 menu->setPosition({125.f, y - 5.f});
                 menu->addChild(button);
@@ -100,6 +98,19 @@ class ModBrowserPopup : public Popup {
             y -= 43.f;
             if (y < -115.f) break;
         }
+    }
+
+    void onDownloadClick(CCObject* sender) {
+        auto it = m_downloads.find(sender);
+        if (it == m_downloads.end()) return;
+        auto split = it->second.second.find('|');
+        auto gd = it->second.second.substr(0, split);
+        auto geode = split == std::string::npos ? std::string() : it->second.second.substr(split + 1);
+        if (gd != "2.2081" || geode != "5.11.2") {
+            FLAlertLayer::create("ModBrowser", "This mod does not target GD 2.2081 / Geode 5.11.2.", "OK")->show();
+            return;
+        }
+        downloadMod(it->second.first);
     }
 
     void downloadMod(std::string const& url) {
