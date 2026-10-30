@@ -1,25 +1,23 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/MenuLayer.hpp>
-#include <Geode/ui/GeodeUI.hpp>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/utils/web.hpp>
 #include <Geode/utils/file.hpp>
-#include <Geode/utils/general.hpp>
+#include <filesystem>
 #include <string>
 
 using namespace geode::prelude;
-
-// ModBrowser uses a small JSON manifest hosted by the server URL entered below.
-// Manifest format: {"mods":[{"id":"author.mod","name":"Mod name","version":"1.0","description":"...","gd":"2.2081","geode":"5.11.2","platform":"android64","download":"https://host/file.geode"}]}
 
 class ModBrowserPopup : public Popup {
     CCTextInputNode* m_serverInput = nullptr;
     CCLabelBMFont* m_status = nullptr;
     CCNode* m_list = nullptr;
+    async::TaskHolder<web::WebResponse> m_request;
 
     std::string serverURL() const {
-        if (m_serverInput && m_serverInput->getString() && m_serverInput->getString()[0]) {
-            return m_serverInput->getString();
+        if (m_serverInput) {
+            auto value = m_serverInput->getString();
+            if (!value.empty()) return std::string(std::string_view(value));
         }
         return "https://mods.vinzgd.space";
     }
@@ -28,42 +26,50 @@ class ModBrowserPopup : public Popup {
         if (m_status) m_status->setString(value.c_str());
     }
 
+    static std::string field(matjson::Value const& object, char const* key, std::string fallback = "") {
+        auto value = object.get(key);
+        if (!value) return fallback;
+        return value.unwrap().asString().unwrapOr(fallback);
+    }
+
     void onConnect(CCObject*) {
         auto url = serverURL();
         while (!url.empty() && url.back() == '/') url.pop_back();
         setStatus("Connecting...");
-        auto req = web::WebRequest();
-        req.get(url + "/mods.json").listen([this](web::WebResponse* response) {
-            if (!response) {
-                setStatus("Server connection failed");
-                return;
+        m_request.spawn(
+            web::WebRequest().get(url + "/mods.json"),
+            [this](web::WebResponse response) {
+                if (!response.ok()) {
+                    setStatus("HTTP error: " + std::to_string(response.code()));
+                    return;
+                }
+                auto parsed = response.json();
+                if (!parsed || !parsed.unwrap().contains("mods")) {
+                    setStatus("Invalid mods.json manifest");
+                    return;
+                }
+                setStatus("Server online - manifest loaded");
+                showMods(parsed.unwrap()["mods"]);
             }
-            if (response->code() < 200 || response->code() >= 300) {
-                setStatus("HTTP error: " + std::to_string(response->code()));
-                return;
-            }
-            auto parsed = matjson::parse(response->string());
-            if (!parsed || !parsed.unwrap().contains("mods")) {
-                setStatus("Invalid mods.json manifest");
-                return;
-            }
-            setStatus("Server online - manifest loaded");
-            showMods(parsed.unwrap()["mods"]);
-        });
+        );
     }
 
     void showMods(matjson::Value const& mods) {
         if (!m_list) return;
         m_list->removeAllChildren();
         float y = 62.f;
+        if (!mods.isArray()) {
+            setStatus("Manifest 'mods' must be an array");
+            return;
+        }
         for (auto const& mod : mods) {
             if (!mod.isObject()) continue;
-            auto name = mod.get("name").asString().unwrapOr("Unknown mod");
-            auto version = mod.get("version").asString().unwrapOr("");
-            auto id = mod.get("id").asString().unwrapOr("");
-            auto gd = mod.get("gd").asString().unwrapOr("2.2081");
-            auto geode = mod.get("geode").asString().unwrapOr("5.11.2");
-            auto download = mod.get("download").asString().unwrapOr("");
+            auto name = field(mod, "name", "Unknown mod");
+            auto version = field(mod, "version");
+            auto id = field(mod, "id");
+            auto gd = field(mod, "gd", "2.2081");
+            auto geode = field(mod, "geode", "5.11.2");
+            auto download = field(mod, "download");
             auto label = CCLabelBMFont::create((name + "  v" + version).c_str(), "goldFont.fnt");
             label->setAnchorPoint({0.f, .5f});
             label->setScale(.42f);
@@ -98,22 +104,29 @@ class ModBrowserPopup : public Popup {
 
     void downloadMod(std::string const& url) {
         setStatus("Downloading mod...");
-        auto req = web::WebRequest();
-        req.get(url).listen([this](web::WebResponse* response) {
-            if (!response || response->code() < 200 || response->code() >= 300) {
-                setStatus("Download failed");
-                return;
+        m_request.spawn(
+            web::WebRequest().get(url),
+            [this](web::WebResponse response) {
+                if (!response.ok()) {
+                    setStatus("Download failed: HTTP " + std::to_string(response.code()));
+                    return;
+                }
+                auto path = Mod::get()->getSaveDir() / "downloads" / "modbrowser-download.geode";
+                std::error_code ec;
+                std::filesystem::create_directories(path.parent_path(), ec);
+                if (ec) {
+                    setStatus("Could not create download folder");
+                    return;
+                }
+                auto result = utils::file::writeBinary(path, response.data());
+                if (!result) {
+                    setStatus("Could not save .geode file");
+                    return;
+                }
+                setStatus("Downloaded: " + path.filename().string());
+                FLAlertLayer::create("ModBrowser", "Downloaded .geode package to the ModBrowser save folder. Install it using Geode's file installer.", "OK")->show();
             }
-            auto path = Mod::get()->getSaveDir() / "downloads" / "modbrowser-download.geode";
-            (void) utils::file::createDirectoryAll(path.parent_path());
-            auto result = utils::file::writeBinary(path, response->data());
-            if (!result) {
-                setStatus("Could not save .geode file");
-                return;
-            }
-            setStatus("Saved: " + path.filename().string());
-            FLAlertLayer::create("ModBrowser", "Downloaded .geode package to the ModBrowser save folder. Install it using Geode's file installer.", "OK")->show();
-        });
+        );
     }
 
     bool init() {
@@ -125,7 +138,7 @@ class ModBrowserPopup : public Popup {
         subtitle->setPosition({0.f, 91.f});
         m_mainLayer->addChild(subtitle);
 
-        auto serverLabel = CCLabelBMFont::create("Server / DNS URL", "bigFont.fnt");
+        auto serverLabel = CCLabelBMFont::create("Server URL", "bigFont.fnt");
         serverLabel->setScale(.42f);
         serverLabel->setAnchorPoint({0.f, .5f});
         serverLabel->setPosition({-153.f, 64.f});
