@@ -1,0 +1,11 @@
+{
+  "geode": "v5.11.2",
+  "gd": {
+    "android": "2.2081"
+  },
+  "id": "vinz.mod-browser",
+  "name": "Vinz Mod Browser",
+  "version": "v1.0.0",
+  "developer": "Clovenow Gaming",
+  "description": "Quick access to the official Geode mod browser for compatible mods."
+}
